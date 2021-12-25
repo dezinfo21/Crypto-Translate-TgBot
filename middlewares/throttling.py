@@ -1,10 +1,30 @@
 import asyncio
+from typing import Dict
 
-from aiogram import types, Dispatcher
-from aiogram.dispatcher import DEFAULT_RATE_LIMIT
+from aiogram import Dispatcher,  types
 from aiogram.dispatcher.handler import CancelHandler, current_handler
 from aiogram.dispatcher.middlewares import BaseMiddleware
 from aiogram.utils.exceptions import Throttled
+
+DEFAULT_RATE_LIMIT = 0.5
+
+
+def rate_limit(limit: int, key=None):
+    """
+    Decorator for configuring rate limit and key in different functions.
+
+    :param limit:
+    :param key:
+    :return:
+    """
+
+    def decorator(func):
+        setattr(func, 'throttling_rate_limit', limit)
+        if key:
+            setattr(func, 'throttling_key', key)
+        return func
+
+    return decorator
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -17,21 +37,44 @@ class ThrottlingMiddleware(BaseMiddleware):
         self.prefix = key_prefix
         super(ThrottlingMiddleware, self).__init__()
 
-    async def on_process_message(self, message: types.Message, data: dict):
+    async def on_process_message(self, message: types.Message, data: Dict):
+        """
+        This handler is called when dispatcher receives a message
+
+        :param message:
+        """
+        # Get current handler
         handler = current_handler.get()
+
+        # Get dispatcher from context
         dispatcher = Dispatcher.get_current()
+        # If handler was configured, get rate limit and key from handler
         if handler:
-            limit = getattr(handler, "throttling_rate_limit", self.rate_limit)
-            key = getattr(handler, "throttling_key", f"{self.prefix}_{handler.__name__}")
+            limit = getattr(handler, 'throttling_rate_limit', self.rate_limit)
+            key = getattr(handler, 'throttling_key', f"{self.prefix}_{handler.__name__}")
         else:
             limit = self.rate_limit
             key = f"{self.prefix}_message"
+
+        # Use Dispatcher.throttle method.
         try:
             await dispatcher.throttle(key, rate=limit)
         except Throttled as t:
-            await self.message_throttled(message, t)
+            # Execute action
+            await self.message_throttled(t)
+
+            # Cancel current handler
             raise CancelHandler()
 
-    async def message_throttled(self, message: types.Message, throttled: Throttled):
-        if throttled.exceeded_count <= 2:
-            await message.reply("Too many requests!")
+    async def message_throttled(self, throttled: Throttled):
+        """
+        Notify user only on first exceed and notify about unlocking only on last exceed
+
+        :param throttled:
+        """
+
+        # Calculate how many time is left till the lock ends
+        delta = throttled.rate - throttled.delta
+
+        # Sleep.
+        await asyncio.sleep(delta)
